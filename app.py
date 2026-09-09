@@ -20,7 +20,6 @@ if os.path.exists(font_path):
     fm.fontManager.addfont(font_path)
     font_prop = fm.FontProperties(fname=font_path)
     plt.rc("font", family=font_prop.get_name())
-    # Streamlit 전체 CSS에 Pretendard 적용
     st.markdown(
         f"""
         <style>
@@ -36,8 +35,8 @@ if os.path.exists(font_path):
         unsafe_allow_html=True
     )
 else:
-    # 폰트 파일이 없을 경우 시스템 한글 폰트 폴백 설정
-    plt.rc("font", family="Malgun Gothic" if os.name == "nt" else "NanumGothic")
+    # 폰트 파일이 없을 경우 시스템 기본 한글 폰트 폴백
+    plt.rc("font", family="Malgun Gothic" if os.name == "nt" else "AppleGothic")
 
 plt.rcParams["axes.unicode_minus"] = False
 
@@ -50,70 +49,38 @@ def load_data():
     country_file = "country_codes_sample.csv"
 
     # BACI 샘플 데이터 불러오기
-    if os.path.exists(baci_file):
-        df_baci = pd.read_csv(baci_file)
-    else:
-        # 파일이 없을 경우 예시 구조 가상 생성 (테스트용)
-        np.random.seed(42)
-        n = 1000
-        countries = [124, 156, 251, 276, 392, 410, 842, 826, 682, 702]
-        years = [2018, 2019, 2020, 2021, 2022]
-        df_baci = pd.DataFrame({
-            "t": np.random.choice(years, n),
-            "i": np.random.choice(countries, n),
-            "j": np.random.choice(countries, n),
-            "k": np.random.randint(100000, 999999, n),
-            "v": np.random.exponential(scale=5000, size=n) + 10,
-            "q": np.random.exponential(scale=1000, size=n)
-        })
-        # 결측치 일부 생성
-        df_baci.loc[np.random.choice(n, 30, replace=False), "q"] = np.nan
-
+    df_baci = pd.read_csv(baci_file)
     # 국가 코드 데이터 불러오기
-    if os.path.exists(country_file):
-        df_country = pd.read_csv(country_file)
-    else:
-        df_country = pd.DataFrame({
-            "country_code": [124, 156, 251, 276, 392, 410, 842, 826, 682, 702],
-            "country_name": ["Canada", "China", "France", "Germany", "Japan", "Korea", "USA", "UK", "Saudi Arabia", "Singapore"]
-        })
+    df_country = pd.read_csv(country_file)
 
-    # 컬럼 표준화
-    # BACI: t(연도), i(수출국), j(수입국), v(수출액), q(수량)
-    # 국가코드 컬럼 확인 (country_code / i_iso3 / iso3 / id 등)
-    c_code_col = [col for col in df_country.columns if "code" in col.lower() or "id" in col.lower() or col in ["i", "country_code_iso3", "iso3"]]
-    c_name_col = [col for col in df_country.columns if "name" in col.lower() or "country" in col.lower()]
-    
-    code_col = c_code_col[0] if c_code_col else df_country.columns[0]
-    name_col = c_name_col[0] if c_name_col else (df_country.columns[1] if len(df_country.columns) > 1 else df_country.columns[0])
+    # 1) 원본 결측치 확인용 데이터프레임 보존
+    missing_df = pd.DataFrame({
+        "컬럼명": df_baci.columns,
+        "결측치 개수": df_baci.isnull().sum().values,
+        "결측치 비율(%)": (df_baci.isnull().sum().values / len(df_baci) * 100).round(2)
+    })
 
-    # 국가명 매핑 딕셔너리
-    country_map = dict(zip(df_country[code_col], df_country[name_col]))
+    # 2) j열을 기준으로 국가명 매핑
+    country_map = dict(zip(df_country["j"], df_country["country_name"]))
+    df_baci["country_name"] = df_baci["j"].map(country_map).fillna(df_baci["j"].astype(str))
 
-    # 수출국(i) 기준 국가명 생성
-    export_col = "i" if "i" in df_baci.columns else ("exporter" if "exporter" in df_baci.columns else df_baci.columns[1])
-    year_col = "t" if "t" in df_baci.columns else ("year" if "year" in df_baci.columns else df_baci.columns[0])
-    val_col = "v" if "v" in df_baci.columns else ("value" if "value" in df_baci.columns else df_baci.columns[4])
-
-    df_baci["country_name"] = df_baci[export_col].map(country_map).fillna(df_baci[export_col].astype(str))
-    
-    # 무역액 등급 구분 (대·중·소) - 3분위수(qcut) 기준 분류
+    # 3) 무역액 등급 구분 (대·중·소) - 3분위수(qcut) 기준 분류
     df_baci["trade_grade"] = pd.qcut(
-        df_baci[val_col],
+        df_baci["v"],
         q=3,
         labels=["소", "중", "대"]
     )
 
-    return df_baci, df_country, year_col, export_col, val_col
+    return df_baci, missing_df
 
-df_raw, df_country, col_year, col_exporter, col_val = load_data()
+df_raw, missing_df = load_data()
 
 # ---------------------------------------------------------
 # 2. 사이드바 필터 구성
 # ---------------------------------------------------------
 st.sidebar.header("🔍 필터 옵션")
 
-# 국가 선택 필터
+# 국가 선택 필터 (j열 기준 국가명)
 all_countries = sorted(list(df_raw["country_name"].unique()))
 selected_countries = st.sidebar.multiselect(
     "국가 선택",
@@ -145,12 +112,7 @@ st.markdown("---")
 
 # 2. baci_85_sample.csv 파일의 결측치
 st.subheader("📌 baci_85_sample.csv 파일의 결측치")
-missing_df = pd.DataFrame({
-    "컬럼명": df_raw.columns,
-    "결측치 개수": df_raw.isnull().sum().values,
-    "결측치 비율(%)": (df_raw.isnull().sum().values / len(df_raw) * 100).round(2)
-})
-st.dataframe(missing_df.T if False else missing_df, use_container_width=True)
+st.dataframe(missing_df, use_container_width=True)
 
 st.markdown("---")
 
@@ -159,7 +121,7 @@ st.subheader("📊 거래 현황 요약")
 col1, col2 = st.columns(2)
 
 total_count = len(filtered_df)
-total_export_val = filtered_df[col_val].sum()
+total_export_val = filtered_df["v"].sum()
 
 with col1:
     st.metric(
@@ -182,16 +144,16 @@ chart_col1, chart_col2 = st.columns(2)
 with chart_col1:
     st.markdown("##### 국가 × 연도 수출액 히트맵 (상위 8개국)")
     if not filtered_df.empty:
-        # 상위 8개 수출국 추출
+        # 상위 8개국 추출 (수출액 합계 기준)
         top_8_countries = (
-            filtered_df.groupby("country_name")[col_val]
+            filtered_df.groupby("country_name")["v"]
             .sum()
             .nlargest(8)
             .index
         )
         heatmap_data = (
             filtered_df[filtered_df["country_name"].isin(top_8_countries)]
-            .pivot_table(index="country_name", columns=col_year, values=col_val, aggfunc="sum", fill_value=0)
+            .pivot_table(index="country_name", columns="t", values="v", aggfunc="sum", fill_value=0)
         )
         
         fig_heat, ax_heat = plt.subplots(figsize=(7, 5))
@@ -199,7 +161,7 @@ with chart_col1:
             heatmap_data,
             cmap="YlGnBu",
             annot=True,
-            fmt=",.0f",
+            fmt=",.1f",
             linewidths=0.5,
             ax=ax_heat
         )
@@ -219,7 +181,7 @@ with chart_col2:
         colors = ["#2b5c8f", "#4f81bd", "#95b3d7"]
         bars = ax_bar.bar(grade_counts.index, grade_counts.values, color=colors, edgecolor="none", width=0.5)
         
-        # 바 차트 위 수치 표시
+        # 막대 위 수치 표시
         for bar in bars:
             height = bar.get_height()
             ax_bar.annotate(
@@ -246,7 +208,7 @@ st.subheader("📋 상위 5개국 × 무역액 등급 교차표")
 
 if not filtered_df.empty:
     top_5_countries = (
-        filtered_df.groupby("country_name")[col_val]
+        filtered_df.groupby("country_name")["v"]
         .sum()
         .nlargest(5)
         .index
