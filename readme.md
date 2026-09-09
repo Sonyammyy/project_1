@@ -5,7 +5,7 @@
 baci_85_sample.csv 사용
 country_codes_sample.csv 사용
 streamlit 사용
-한글지원 해 줘.
+한글지원 해 줘. Pretendard-Regular.otf
 
 오른쪽 화면에
 
